@@ -20,7 +20,7 @@ export type PaymentCreateInput = {
   productId: number;
   productSkuId: number;
   quantity: number;
-  paymentProvider: PaymentProviderKind;
+  paymentProvider: PaymentProviderKind | "EXTERNAL_LINK";
   paymentChannel?: PaymentChannel;
   contactType: "EMAIL" | "QQ" | "TELEGRAM" | "OTHER";
   contactValue?: string;

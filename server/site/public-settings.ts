@@ -18,6 +18,8 @@ export type PublicSiteSettings = {
   supportContact: LocalizedText;
   footerText: LocalizedText;
   orderNotice: LocalizedNullableText;
+  externalPayUrl: string | null;
+  externalPayButtonText: string | null;
   currency: CurrencyCode;
 };
 
@@ -48,6 +50,8 @@ const defaultSettings: SiteSettingRecord = {
   orderNotice: null,
   headCode: null,
   footerCode: null,
+  externalPayUrl: null,
+  externalPayButtonText: null,
   translationsJson: null,
   registrationEnabled: false,
   timezone: "Asia/Shanghai",
@@ -89,6 +93,8 @@ export function toPublicSiteSettings(record: SiteSettingRecord): PublicSiteSetti
     supportContact: buildLocalizedText(record.supportContact?.trim() || DEFAULT_SUPPORT_CONTACT, translations, "supportContact"),
     footerText: buildLocalizedText(record.footerText?.trim() || DEFAULT_FOOTER_TEXT, translations, "footerText"),
     orderNotice: buildLocalizedOptionalText(record.orderNotice, translations, "orderNotice"),
+    externalPayUrl: record.externalPayUrl ?? null,
+    externalPayButtonText: record.externalPayButtonText ?? null,
     currency: isCurrencyCode(record.currency) ? record.currency : BASE_CURRENCY,
   };
 }

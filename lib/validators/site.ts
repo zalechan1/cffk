@@ -1,3 +1,4 @@
+import { normalizeExternalPayUrl } from "@/lib/external-pay";
 import { normalizeSiteTimezone } from "@/lib/site-timezone";
 import type { ContentTranslations } from "@/lib/content-translations";
 
@@ -61,6 +62,8 @@ export type SiteSettingsInput = {
   orderNotice?: string | null;
   headCode?: string | null;
   footerCode?: string | null;
+  externalPayUrl?: string | null;
+  externalPayButtonText?: string | null;
   registrationEnabled?: boolean;
   timezone: string;
   translations?: ContentTranslations;
@@ -91,6 +94,8 @@ export function validateSiteSettingsInput(input: SiteSettingsInput) {
     orderNotice: optionalText(input.orderNotice, "SITE_ORDER_NOTICE", 2_000),
     headCode: optionalText(input.headCode, "SITE_HEAD_CODE", 20_000),
     footerCode: optionalText(input.footerCode, "SITE_FOOTER_CODE", 20_000),
+    externalPayUrl: normalizeExternalPayUrl(input.externalPayUrl, "SITE_EXTERNAL_PAY_URL_INVALID"),
+    externalPayButtonText: optionalText(input.externalPayButtonText, "SITE_EXTERNAL_PAY_BUTTON_TEXT", 40),
     registrationEnabled: input.registrationEnabled === true,
     timezone,
   };

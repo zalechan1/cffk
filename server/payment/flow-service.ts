@@ -1,9 +1,11 @@
 import { and, count, eq, isNull } from "drizzle-orm";
 import { getContext } from "telefunc";
 import { createDrizzleDb } from "@/database/drizzle";
-import { card, order, productSku } from "@/database/drizzle/schema";
+import { card, order, productSku, productV2 } from "@/database/drizzle/schema";
 import { appError } from "@/lib/app-error";
-import { isCurrencyCode } from "@/lib/money";
+import { PRODUCT_TRANSLATION_FIELDS, SKU_TRANSLATION_FIELDS, localizeContentText, readContentTranslations } from "@/lib/content-translations";
+import { resolveExternalPayUrl } from "@/lib/external-pay";
+import { formatMinor, isCurrencyCode } from "@/lib/money";
 import { normalizeOrderEmail } from "@/lib/local-orders";
 import { isStorefrontLocale, type StorefrontLocale } from "@/lib/i18n/locale";
 import { reportUnexpectedServerError } from "@/server/error-handling";
@@ -61,7 +63,104 @@ function orderAccess(ownerUserId: string | null, email?: string) {
 export class PaymentFlowService {
   constructor(private readonly database: D1Database, private readonly runtime: Record<string, unknown> = {}) {}
 
+  private async buildExternalPayUrl(params: {
+    productId: number | null;
+    productSkuId: number | null;
+    orderNo: string;
+    amount: number;
+    currency: string;
+    quantity: number;
+    email?: string | null;
+    locale?: StorefrontLocale;
+    fallbackProductName?: string;
+    fallbackSkuName?: string | null;
+  }): Promise<string> {
+    const db = createDrizzleDb(this.database);
+    const [productRow, skuRow, site] = await Promise.all([
+      params.productId
+        ? db.select({ slug: productV2.slug, name: productV2.name, translationsJson: productV2.translationsJson, externalPayUrl: productV2.externalPayUrl }).from(productV2).where(eq(productV2.id, params.productId)).limit(1).then((rows) => rows[0] ?? null)
+        : Promise.resolve(null),
+      params.productSkuId
+        ? db.select({ name: productSku.name, translationsJson: productSku.translationsJson, externalPayUrl: productSku.externalPayUrl }).from(productSku).where(eq(productSku.id, params.productSkuId)).limit(1).then((rows) => rows[0] ?? null)
+        : Promise.resolve(null),
+      getSiteSettings(this.database),
+    ]);
+
+    const productDisplayName = productRow
+      ? (localizeContentText(productRow.name, readContentTranslations(productRow.translationsJson, PRODUCT_TRANSLATION_FIELDS), params.locale, "name") ?? productRow.name)
+      : (params.fallbackProductName ?? "");
+    const skuDisplayName = skuRow
+      ? (localizeContentText(skuRow.name, readContentTranslations(skuRow.translationsJson, SKU_TRANSLATION_FIELDS), params.locale, "name") ?? skuRow.name)
+      : (params.fallbackSkuName ?? "");
+    const formattedPrice = formatMinor(params.amount, isCurrencyCode(params.currency) ? params.currency : "CNY");
+    const resolved = resolveExternalPayUrl({
+      skuUrl: skuRow?.externalPayUrl,
+      productUrl: productRow?.externalPayUrl,
+      siteUrl: site.externalPayUrl,
+      context: {
+        orderNo: params.orderNo,
+        slug: productRow?.slug ?? "",
+        product: productDisplayName,
+        sku: skuDisplayName,
+        price: formattedPrice,
+        quantity: params.quantity,
+        email: params.email?.trim() ?? "",
+      },
+    });
+    if (!resolved) appError("EXTERNAL_PAY_URL_INVALID");
+    return resolved;
+  }
+
   async create(input: PaymentCreateInput, ownerUserId: string | null, locale?: StorefrontLocale, clientIp?: string | null): Promise<PaymentCreateResult> {
+    if (input.paymentProvider === "EXTERNAL_LINK") {
+      // Confirm an external link is actually configured before reserving stock or creating a pending order.
+      const db = createDrizzleDb(this.database);
+      const [productRow, skuRow, site] = await Promise.all([
+        db.select({ externalPayUrl: productV2.externalPayUrl }).from(productV2).where(eq(productV2.id, input.productId)).limit(1).then((rows) => rows[0] ?? null),
+        db.select({ externalPayUrl: productSku.externalPayUrl }).from(productSku).where(eq(productSku.id, input.productSkuId)).limit(1).then((rows) => rows[0] ?? null),
+        getSiteSettings(this.database),
+      ]);
+      const hasUrl = Boolean(skuRow?.externalPayUrl?.trim() || productRow?.externalPayUrl?.trim() || site.externalPayUrl?.trim());
+      if (!hasUrl) appError("EXTERNAL_PAY_URL_INVALID");
+
+      const created = await createOrder(this.database, { ...input, locale, paymentProvider: "EXTERNAL_LINK", paymentChannel: "external_link", allowPendingPayment: true } as CreateOrderInput, ownerUserId);
+      const logs = new PaymentLogService(this.database);
+      if (created.amount === 0) {
+        try {
+          const outcome = await this.confirm(created.orderNo, "ZERO_AMOUNT");
+          if (outcome !== "CONFIRMED" && outcome !== "ALREADY_PAID" && outcome !== "DELIVERY_PENDING") {
+            if (outcome === "DELIVERY_FAILED") appError(created.fulfillmentSource === "SUPPLIER" ? "SUPPLIER_PURCHASE_UNAVAILABLE" : "ORDER_DELIVERY_FAILED");
+            appError("PAYMENT_CONFIRM_FAILED");
+          }
+          return { ...created, payment: null, paymentStatus: "PAID" };
+        } catch (cause) {
+          await closePendingOrder(this.database, created.id, { eventType: "CLOSE_ON_FAILURE", message: "0 元订单确认失败，已关闭并释放库存与优惠券" }).catch((closeCause) => reportUnexpectedServerError("payment-close-zero-order-failed", closeCause, { orderId: created.id, orderNo: created.orderNo }));
+          throw cause;
+        }
+      }
+
+      const externalUrl = await this.buildExternalPayUrl({
+        productId: input.productId,
+        productSkuId: input.productSkuId,
+        orderNo: created.orderNo,
+        amount: created.amount,
+        currency: created.currency,
+        quantity: input.quantity,
+        email: input.contactValue,
+        locale,
+      });
+      await logs.writeBestEffort({
+        orderId: created.id,
+        provider: "EXTERNAL_LINK",
+        orderNo: created.orderNo,
+        eventType: "CREATE",
+        verifyStatus: "PENDING",
+        message: "已创建外部支付订单，等待买家付款与管理员确认收款",
+        payload: { url: externalUrl, currency: created.currency, exchangeRate: created.exchangeRate },
+      });
+      return { ...created, payment: { mode: "redirect", url: externalUrl } };
+    }
+
     const definition = getProviderDefinition(input.paymentProvider);
     if (!definition) appError("PAYMENT_PROVIDER_NOT_AVAILABLE");
     const provider = await getEnabledPaymentProvider(this.database, input.paymentProvider);
@@ -112,7 +211,7 @@ export class PaymentFlowService {
     if (!orderNo.trim() || !access) appError("ORDER_NOT_FOUND");
     const db = createDrizzleDb(this.database);
     const [record] = await db
-      .select({ id: order.id, orderNo: order.orderNo, amount: order.amount, currency: order.currency, exchangeRate: order.exchangeRate, quantity: order.quantity, productId: order.productId, productSkuId: order.productSkuId, deliveryType: order.deliveryTypeSnapshot, physicalStockReserved: order.physicalStockReserved, paymentProvider: order.paymentProvider, paymentChannel: order.paymentChannel, locale: order.locale })
+      .select({ id: order.id, orderNo: order.orderNo, amount: order.amount, currency: order.currency, exchangeRate: order.exchangeRate, quantity: order.quantity, productId: order.productId, productSkuId: order.productSkuId, productNameSnapshot: order.productNameSnapshot, productSkuNameSnapshot: order.productSkuNameSnapshot, contactValue: order.contactValue, deliveryType: order.deliveryTypeSnapshot, physicalStockReserved: order.physicalStockReserved, paymentProvider: order.paymentProvider, paymentChannel: order.paymentChannel, locale: order.locale })
       .from(order)
       .where(and(eq(order.orderNo, orderNo.trim()), access, eq(order.status, "PENDING"), eq(order.paymentStatus, "UNPAID")))
       .limit(1);
@@ -126,6 +225,31 @@ export class PaymentFlowService {
       if (record.productSkuId === null) appError("PRODUCT_SKU_NOT_AVAILABLE");
       const [sku] = await db.select({ physicalStock: productSku.physicalStock }).from(productSku).where(eq(productSku.id, record.productSkuId)).limit(1);
       if (sku?.physicalStock !== null && (sku?.physicalStock ?? 0) < record.quantity) appError("PRODUCT_STOCK_NOT_ENOUGH");
+    }
+
+    if (record.paymentProvider === "EXTERNAL_LINK") {
+      const externalUrl = await this.buildExternalPayUrl({
+        productId: record.productId,
+        productSkuId: record.productSkuId,
+        orderNo: record.orderNo,
+        amount: record.amount,
+        currency: record.currency,
+        quantity: record.quantity,
+        email: record.contactValue,
+        locale: locale ?? (isStorefrontLocale(record.locale) ? record.locale : undefined),
+        fallbackProductName: record.productNameSnapshot,
+        fallbackSkuName: record.productSkuNameSnapshot,
+      });
+      await new PaymentLogService(this.database).writeBestEffort({
+        orderId: record.id,
+        provider: "EXTERNAL_LINK",
+        orderNo: record.orderNo,
+        eventType: "RESUME",
+        verifyStatus: "PENDING",
+        message: "用户重新打开外部支付链接",
+        payload: { url: externalUrl, currency: record.currency, exchangeRate: record.exchangeRate },
+      });
+      return { orderNo: record.orderNo, amount: record.amount, currency: record.currency, paymentStatus: "UNPAID", payment: { mode: "redirect", url: externalUrl } };
     }
 
     const provider = await getEnabledPaymentProvider(this.database, record.paymentProvider as PaymentProviderKind, isCurrencyCode(record.currency) ? record.currency : "CNY");
@@ -180,7 +304,7 @@ export class PaymentFlowService {
     const queriedOrder = await (await import("@/server/order/service")).getOrderForQuery(this.database, orderNo, ownerUserId, email);
     if (!queriedOrder || queriedOrder.paymentStatus !== "UNPAID") return queriedOrder;
     const record = await paymentRepository(this.database).findOrder(orderNo);
-    if (!record) return queriedOrder;
+    if (!record || record.paymentProvider === "EXTERNAL_LINK") return queriedOrder;
     const provider = await getEnabledPaymentProvider(this.database, record.paymentProvider as never);
     const definition = provider && getProviderDefinition(provider.provider);
     if (!provider || !definition) return queriedOrder;

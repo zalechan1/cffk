@@ -16,7 +16,7 @@ export function sanitizePaymentLogPayload(value: unknown): unknown {
 export class PaymentLogService {
   constructor(private readonly database: D1Database) {}
 
-  async write(input: { orderId?: number; provider: PaymentProviderKind; orderNo?: string; paymentOrderNo?: string; eventType: string; verifyStatus: "PENDING" | "VERIFIED" | "FAILED"; message?: string; payload?: unknown }) {
+  async write(input: { orderId?: number; provider: PaymentProviderKind | "EXTERNAL_LINK"; orderNo?: string; paymentOrderNo?: string; eventType: string; verifyStatus: "PENDING" | "VERIFIED" | "FAILED"; message?: string; payload?: unknown }) {
     await createDrizzleDb(this.database).insert(paymentLog).values({
       orderId: input.orderId ?? null,
       provider: input.provider,

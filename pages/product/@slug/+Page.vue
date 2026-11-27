@@ -34,7 +34,18 @@
                     </Button>
                   </div>
                 </div>
-                <p v-if="requiresPayment && !methods.length" class="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{{ messages.productCheckout.noPaymentMethod }}</p>
+                <p v-if="requiresPayment && !methods.length && !activeExternalPayUrl" class="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{{ messages.productCheckout.noPaymentMethod }}</p>
+                <div v-if="activeExternalPayUrl && methods.length" class="grid gap-2 text-sm font-medium">
+                  <span>{{ messages.productCheckout.paymentMethod }}</span>
+                  <div class="grid grid-cols-2 gap-2" role="group" :aria-label="messages.productCheckout.paymentMethod">
+                    <Button type="button" :variant="checkoutChannel === 'external' ? 'default' : 'outline'" class="h-auto min-h-10 justify-start whitespace-normal px-3 py-2 text-left text-sm leading-5" :aria-pressed="checkoutChannel === 'external'" @click="checkoutChannel = 'external'">
+                      {{ externalPayButtonLabel }}
+                    </Button>
+                    <Button type="button" :variant="checkoutChannel === 'native' ? 'default' : 'outline'" class="h-auto min-h-10 justify-start whitespace-normal px-3 py-2 text-left text-sm leading-5" :aria-pressed="checkoutChannel === 'native'" @click="checkoutChannel = 'native'">
+                      {{ messages.productCheckout.nativePayChoice }}
+                    </Button>
+                  </div>
+                </div>
                 <label class="grid min-w-0 gap-2 text-sm font-medium"><span class="flex items-center gap-1"><span class="text-destructive">*</span> {{ messages.productCheckout.contactEmail }}</span><Input v-model="contactValue" type="email" autocomplete="email" required /></label>
                 <label class="grid min-w-0 gap-2 text-sm font-medium"><span class="flex items-center gap-1"><span class="text-destructive">*</span> {{ messages.productCheckout.quantity }}</span><Input v-model.number="quantity" type="number" :min="selectedSku.minBuy" :max="purchaseLimit" required /><span v-if="isStockLimited" class="text-xs font-normal text-muted-foreground">{{ t(messages.productCheckout.availableStock, { count: availableStock }) }}</span></label>
                 <FieldSet v-if="selectedSku.deliveryType === 'EXPRESS'" class="min-w-0 gap-4">
@@ -49,7 +60,7 @@
                     </div>
                   </div>
                 </FieldSet>
-                <div v-if="methods.length" class="grid gap-2 text-sm font-medium">
+                <div v-if="methods.length && !useExternalPayOnly" class="grid gap-2 text-sm font-medium">
                   <span>{{ messages.productCheckout.paymentMethod }}</span>
                   <div class="grid grid-cols-2 gap-2" role="group" :aria-label="messages.productCheckout.paymentMethod">
                     <Button
@@ -68,7 +79,7 @@
                 <div class="grid gap-2 text-sm font-medium"><span>{{ messages.productCheckout.discountCode }}</span><div class="flex gap-2"><Input v-model="discountCode" autocomplete="off" @keydown.enter.prevent="onApplyDiscount" /><Button type="button" variant="outline" :disabled="discountApplying || !discountCode.trim()" @click="onApplyDiscount">{{ discountApplying ? messages.productCheckout.applyingDiscount : messages.productCheckout.applyDiscount }}</Button></div></div>
                 <div v-if="discountPreview" class="grid gap-1 rounded-md border bg-muted/30 p-3 text-sm"><div class="flex justify-between gap-4"><span class="text-muted-foreground">{{ messages.productCheckout.originalAmount }}</span><span>{{ discountPreview.originalAmount }}</span></div><div class="flex justify-between gap-4"><span class="text-muted-foreground">{{ t(messages.productCheckout.appliedDiscount, { code: discountPreview.code }) }}</span><span class="text-destructive">-{{ discountPreview.discountAmount }}</span></div><div class="flex justify-between gap-4 border-t pt-2 font-medium"><span>{{ messages.productCheckout.amountDue }}</span><span>{{ discountPreview.finalAmount }}<CurrencyHint /></span></div></div>
                 <label class="grid gap-2 text-sm font-medium">{{ messages.productCheckout.buyerNote }}<Textarea v-model="buyerNote" rows="3" /></label>
-              </CardContent><CardFooter class="flex-col items-stretch gap-3"><Button type="submit" :disabled="loading || isOutOfStock || (requiresPayment && !methods.length)">{{ loading ? messages.productCheckout.processingOrder : isOutOfStock ? messages.storefront.outOfStock : requiresPayment ? messages.productCheckout.submitAndPay : messages.productCheckout.createFreeOrder }}</Button><p class="text-xs text-muted-foreground">{{ messages.productCheckout.paymentAmountNotice }}</p></CardFooter>
+              </CardContent><CardFooter class="flex-col items-stretch gap-3"><Button type="submit" :data-external-pay-url="useExternalPayOnly ? activeExternalPayUrl ?? undefined : undefined" :disabled="loading || isOutOfStock || (!useExternalPayOnly && requiresPayment && !methods.length)">{{ loading ? messages.productCheckout.processingOrder : isOutOfStock ? messages.storefront.outOfStock : useExternalPayOnly ? externalPayButtonLabel : requiresPayment ? messages.productCheckout.submitAndPay : messages.productCheckout.createFreeOrder }}</Button><p class="text-xs text-muted-foreground">{{ useExternalPayOnly ? messages.productCheckout.externalPayNotice : messages.productCheckout.paymentAmountNotice }}</p></CardFooter>
             </form>
           </Card>
         </aside>
@@ -96,6 +107,24 @@
         <DialogFooter>
           <Button type="button" variant="outline" @click="clearAddressesDialogOpen = false">{{ messages.productCheckout.cancel }}</Button>
           <Button type="button" variant="destructive" @click="confirmClearSavedAddresses">{{ messages.productCheckout.confirmClearAddresses }}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <Dialog :open="Boolean(externalOrderModal)" @update:open="(open) => { if (!open) externalOrderModal = null; }">
+      <DialogContent :close-label="messages.common.close" class="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>{{ messages.productCheckout.externalOrderCreatedTitle }}</DialogTitle>
+          <DialogDescription>{{ messages.productCheckout.externalOrderCreatedDescription }}</DialogDescription>
+        </DialogHeader>
+        <div v-if="externalOrderModal" class="grid gap-3 rounded-lg border bg-muted/30 p-4 text-sm">
+          <div class="flex items-center justify-between gap-3"><span class="text-muted-foreground">{{ messages.productCheckout.externalOrderNumber }}</span><span class="font-mono font-semibold">{{ externalOrderModal.orderNo }}</span></div>
+          <div class="flex items-center justify-between gap-3"><span class="text-muted-foreground">{{ messages.productCheckout.externalOrderAmount }}</span><span class="font-semibold text-orange-600">{{ externalOrderModal.amountText }}</span></div>
+          <div class="flex items-center justify-between gap-3"><span class="text-muted-foreground">{{ messages.productCheckout.externalOrderEmail }}</span><span class="break-all">{{ externalOrderModal.email }}</span></div>
+        </div>
+        <DialogFooter class="flex-col gap-2 sm:flex-row">
+          <Button v-if="externalOrderModal" variant="outline" as-child class="w-full sm:w-auto"><a :href="externalOrderModal.orderUrl">{{ messages.productCheckout.externalPayCheckOrder }}</a></Button>
+          <Button v-if="externalOrderModal" as-child class="w-full sm:w-auto"><a :href="externalOrderModal.payUrl" target="_blank" rel="noopener noreferrer">{{ messages.productCheckout.externalPayOpenLink }} ↗</a></Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -134,6 +163,8 @@ import { onCreateAddress, onListAddresses } from "@/server/address/index.telefun
 import { onPreviewDiscount } from "@/server/discount/preview.telefunc";
 import { displayPaymentProviderName } from "@/lib/i18n/payment-providers";
 import { pickLocalizedOptionalText, pickLocalizedText } from "@/lib/i18n/localized-text";
+import { resolveExternalPayUrl } from "@/lib/external-pay";
+import { formatMinor, isCurrencyCode } from "@/lib/money";
 import { onCreatePayment } from "@/server/payment/checkout.telefunc";
 import type { PaymentChannel, PaymentProviderKind } from "@/server/payment/registry";
 import type { Data } from "./+data.server";
@@ -144,8 +175,10 @@ const productSubtitle = computed(() => (data.subtitle ? pickLocalizedOptionalTex
 const productDescription = computed(() => (data.description ? pickLocalizedOptionalText(data.description, locale.value) : null));
 const productCategoryName = computed(() => (data.categoryName ? pickLocalizedOptionalText(data.categoryName, locale.value) : null));
 function skuName(sku: Data["skus"][number]) { return pickLocalizedText(sku.name, locale.value); }
-const pageContext = usePageContext() as ReturnType<typeof usePageContext> & { user?: { id: string; email?: string | null } | null };
+const pageContext = usePageContext() as ReturnType<typeof usePageContext> & { user?: { id: string; email?: string | null } | null; site?: { externalPayUrl?: string | null; externalPayButtonText?: string | null } };
 const user = pageContext.user ?? null;
+const siteExternalPayUrl = pageContext.site?.externalPayUrl ?? null;
+const externalPayButtonLabel = computed(() => pageContext.site?.externalPayButtonText?.trim() || messages.value.productCheckout.externalPayButtonDefault);
 type Address = Awaited<ReturnType<typeof onListAddresses>>[number];
 type SavedAddress = Address | LocalAddress;
 type AddressForm = { recipientName: string; phone: string; country: string; province: string; city: string; district: string; addressLine: string; postalCode: string };
@@ -167,8 +200,13 @@ const deliveryHint = computed(() => {
 });
 const descriptionRef = ref<HTMLElement | null>(null); const previewImage = ref<{ src: string; alt: string } | null>(null);
 const selectedMethod = ref(methods.value[0]?.key ?? ""); const selectedSkuId = ref(String(data.skus[0]?.id ?? "")); const selectedSku = computed(() => data.skus.find((sku) => String(sku.id) === selectedSkuId.value) ?? data.skus[0] ?? data); const quantity = ref(selectedSku.value.minBuy);
-watch(selectedSku, (sku) => { if (sku) { quantity.value = sku.minBuy; discountPreview.value = null; } });
 const contactValue = ref(user?.email?.trim() ?? ""); const discountCode = ref(""); const buyerNote = ref(""); const discountApplying = ref(false); type DiscountPreview = Awaited<ReturnType<typeof onPreviewDiscount>>; const discountPreview = ref<DiscountPreview | null>(null); const loading = ref(false);
+const externalOrderModal = ref<{ orderNo: string; amountText: string; email: string; payUrl: string; orderUrl: string } | null>(null);
+const activeExternalPayUrl = computed(() => resolveExternalPayUrl({ skuUrl: selectedSku.value.externalPayUrl, productUrl: data.externalPayUrl, siteUrl: siteExternalPayUrl, context: { slug: data.slug, product: productName.value, sku: skuName(selectedSku.value as Data["skus"][number]), price: selectedSku.value.price, quantity: quantity.value, email: contactValue.value.trim() } }));
+const checkoutChannel = ref<"external" | "native">(activeExternalPayUrl.value ? "external" : "native");
+watch(activeExternalPayUrl, (next) => { if (!next) checkoutChannel.value = "native"; else if (!methods.value.length) checkoutChannel.value = "external"; });
+const useExternalPayOnly = computed(() => Boolean(activeExternalPayUrl.value) && (!methods.value.length || checkoutChannel.value === "external"));
+watch(selectedSku, (sku) => { if (sku) { quantity.value = sku.minBuy; discountPreview.value = null; } });
 const addresses = ref<SavedAddress[]>([]); const addressesLoading = ref(false); const selectedAddress = ref("new"); const previousAddressSelection = ref("new"); const clearAddressesDialogOpen = ref(false); const savingAddress = ref(false);
 const addressSchema = z.object({ recipientName: z.string().trim().min(1, messages.value.productCheckout.validation.recipientNameRequired).max(100), phone: z.string().trim().regex(/^[0-9+()\-\s]{5,32}$/, messages.value.productCheckout.validation.phoneInvalid), country: z.string().trim().min(1, messages.value.productCheckout.validation.countryRequired).max(100), province: z.string().trim().min(1, messages.value.productCheckout.validation.provinceRequired).max(100), city: z.string().trim().min(1, messages.value.productCheckout.validation.cityRequired).max(100), district: z.string().trim().min(1, messages.value.productCheckout.validation.districtRequired).max(100), addressLine: z.string().trim().min(1, messages.value.productCheckout.validation.addressLineRequired).max(500), postalCode: z.string().trim().max(20).refine((value) => !value || /^[A-Za-z0-9][A-Za-z0-9\- ]{0,19}$/.test(value), messages.value.productCheckout.validation.postalCodeInvalid) });
 const { handleSubmit, validate, values } = useForm<AddressForm>({ validationSchema: toTypedSchema(addressSchema), initialValues: { recipientName: "", phone: "", country: messages.value.productCheckout.address.defaultCountry, province: "", city: "", district: "", addressLine: "", postalCode: "" }, keepValuesOnUnmount: true });
@@ -182,7 +220,48 @@ const isOutOfStock = computed(() => isStockLimited.value && availableStock.value
 watch([discountCode, quantity], () => { discountPreview.value = null; });
 function previewDescriptionImage(event: MouseEvent) { const image = event.target instanceof HTMLImageElement ? event.target : null; if (image && descriptionRef.value?.contains(image)) previewImage.value = { src: image.currentSrc || image.src, alt: image.alt || productName.value }; }
 async function onApplyDiscount() { const code = discountCode.value; if (!code.trim()) return; const requestedQuantity = quantity.value; const requestedSkuId = selectedSku.value.id; discountPreview.value = null; discountApplying.value = true; try { const preview = await runTelefunc(() => onPreviewDiscount({ productId: data.id, productSkuId: requestedSkuId, quantity: requestedQuantity, discountCode: code }), { notifyError: false }); if (discountCode.value === code && quantity.value === requestedQuantity && selectedSku.value.id === requestedSkuId) discountPreview.value = preview; } catch (cause) { if (discountCode.value === code && quantity.value === requestedQuantity && selectedSku.value.id === requestedSkuId) toast.error(userErrorMessage(cause, messages.value.productCheckout.discountPreviewFailed)); } finally { discountApplying.value = false; } }
-async function onSubmit(address: AddressForm) { if (isOutOfStock.value || (isStockLimited.value && quantity.value > availableStock.value)) { toast.error(messages.value.productCheckout.insufficientStock); return; } if (discountCode.value.trim() && !discountPreview.value) { toast.info(messages.value.productCheckout.applyDiscountFirst); return; } const method = methods.value.find((item) => item.key === selectedMethod.value); if (!method && requiresPayment.value) { toast.error(messages.value.productCheckout.noPaymentMethod); return; } const savedAddress = addresses.value.find((item) => String(item.id) === selectedAddress.value); const useStoredAddress = selectedSku.value.deliveryType === "EXPRESS" && selectedAddress.value !== "new" && savedAddress; const expressAddress = selectedSku.value.deliveryType === "EXPRESS" ? (useStoredAddress ? (user ? { addressId: Number(savedAddress.id) } : { address: { recipientName: savedAddress.recipientName, phone: savedAddress.phone, country: savedAddress.country, province: savedAddress.province, city: savedAddress.city, district: savedAddress.district, addressLine: savedAddress.addressLine, postalCode: savedAddress.postalCode || undefined } }) : { address: { ...address, postalCode: address.postalCode || undefined } }) : {}; loading.value = true; try { const created = await runTelefunc(() => onCreatePayment({ productId: data.id, productSkuId: selectedSku.value.id, quantity: quantity.value, paymentProvider: method?.provider ?? "ALIPAY", paymentChannel: method?.channel, contactType: "EMAIL", contactValue: contactValue.value, ...expressAddress, discountCode: discountPreview.value?.code, buyerNote: buyerNote.value }), { notifyError: false }); if (!pageContext.user) saveGuestOrder(contactValue.value, { orderNo: created.orderNo, productName: productName.value, amount: requiresPayment.value ? (discountPreview.value?.finalAmount ?? selectedSku.value.price) : "0.00", createdAt: new Date().toISOString() }); if (created.payment?.mode === "redirect" && created.payment.url) { window.location.assign(created.payment.url); return; } if (created.payment?.mode === "qr") { cacheQrPayment(created); window.location.assign(`/checkout?orderNo=${encodeURIComponent(created.orderNo)}`); return; } window.location.assign(`${pageContext.user ? "/account/order" : "/order"}?orderNo=${encodeURIComponent(created.orderNo)}`); } catch (cause) { toast.error(userErrorMessage(cause, messages.value.productCheckout.orderSubmissionFailed)); } finally { loading.value = false; } }
+async function onSubmit(address: AddressForm) {
+  if (isOutOfStock.value || (isStockLimited.value && quantity.value > availableStock.value)) { toast.error(messages.value.productCheckout.insufficientStock); return; }
+  if (discountCode.value.trim() && !discountPreview.value) { toast.info(messages.value.productCheckout.applyDiscountFirst); return; }
+  const isExternal = useExternalPayOnly.value;
+  if (isExternal && !activeExternalPayUrl.value) { toast.error(messages.value.productCheckout.externalPayInvalid); return; }
+  const method = methods.value.find((item) => item.key === selectedMethod.value);
+  if (!isExternal && !method && requiresPayment.value) { toast.error(messages.value.productCheckout.noPaymentMethod); return; }
+  const savedAddress = addresses.value.find((item) => String(item.id) === selectedAddress.value);
+  const useStoredAddress = selectedSku.value.deliveryType === "EXPRESS" && selectedAddress.value !== "new" && savedAddress;
+  const expressAddress = selectedSku.value.deliveryType === "EXPRESS" ? (useStoredAddress ? (user ? { addressId: Number(savedAddress.id) } : { address: { recipientName: savedAddress.recipientName, phone: savedAddress.phone, country: savedAddress.country, province: savedAddress.province, city: savedAddress.city, district: savedAddress.district, addressLine: savedAddress.addressLine, postalCode: savedAddress.postalCode || undefined } }) : { address: { ...address, postalCode: address.postalCode || undefined } }) : {};
+  loading.value = true;
+  try {
+    const created = await runTelefunc(() => onCreatePayment({
+      productId: data.id,
+      productSkuId: selectedSku.value.id,
+      quantity: quantity.value,
+      paymentProvider: isExternal ? "EXTERNAL_LINK" : (method?.provider ?? "ALIPAY"),
+      paymentChannel: isExternal ? undefined : method?.channel,
+      contactType: "EMAIL",
+      contactValue: contactValue.value,
+      ...expressAddress,
+      discountCode: discountPreview.value?.code,
+      buyerNote: buyerNote.value,
+    }), { notifyError: false });
+    const currencyCode = isCurrencyCode(created.currency) ? created.currency : data.currency;
+    const formattedAmount = formatMinor(created.amount, currencyCode);
+    if (!pageContext.user) saveGuestOrder(contactValue.value, { orderNo: created.orderNo, productName: productName.value, amount: formattedAmount, createdAt: new Date().toISOString() });
+    if (isExternal && created.payment?.mode === "redirect" && created.payment.url) {
+      const orderUrl = `${pageContext.user ? "/account/order" : "/order"}?orderNo=${encodeURIComponent(created.orderNo)}`;
+      externalOrderModal.value = { orderNo: created.orderNo, amountText: formattedAmount, email: contactValue.value.trim(), payUrl: created.payment.url, orderUrl };
+      window.open(created.payment.url, "_blank", "noopener,noreferrer");
+      return;
+    }
+    if (created.payment?.mode === "redirect" && created.payment.url) { window.location.assign(created.payment.url); return; }
+    if (created.payment?.mode === "qr") { cacheQrPayment(created); window.location.assign(`/checkout?orderNo=${encodeURIComponent(created.orderNo)}`); return; }
+    window.location.assign(`${pageContext.user ? "/account/order" : "/order"}?orderNo=${encodeURIComponent(created.orderNo)}`);
+  } catch (cause) {
+    toast.error(userErrorMessage(cause, messages.value.productCheckout.orderSubmissionFailed));
+  } finally {
+    loading.value = false;
+  }
+}
 const submitAddress = handleSubmit(onSubmit, () => toast.error(messages.value.productCheckout.shippingAddressIncomplete));
 function submit(event: Event) {
   const requiresAddressForm = selectedSku.value.deliveryType === "EXPRESS" && (!user || selectedAddress.value === "new" || !addresses.value.length);

@@ -19,6 +19,7 @@ export const productFormSchema = z.object({
   description: z.string().trim().min(1, "商品详情不能为空"),
   manualDeliveryHint: z.string(),
   purchaseNote: z.string(),
+  externalPayUrl: z.string(),
 
   status: z.enum(productStatuses),
   sort: z.number().int().min(0),
@@ -32,11 +33,11 @@ export function slugifyProductName(value: string) {
 }
 
 export function defaultProductForm(categoryId: number | null = null): ProductForm {
-  return { categoryId: categoryId ?? 0, name: "", slug: "", subtitle: "", coverImage: "", description: "", manualDeliveryHint: "", purchaseNote: "", status: "DRAFT", sort: 0 };
+  return { categoryId: categoryId ?? 0, name: "", slug: "", subtitle: "", coverImage: "", description: "", manualDeliveryHint: "", purchaseNote: "", externalPayUrl: "", status: "DRAFT", sort: 0 };
 }
 
 export function productDetailToForm(item: ProductDetail["product"]): ProductForm {
-  return { id: item.id, categoryId: item.categoryId ?? 0, name: item.name, slug: item.slug, subtitle: item.subtitle ?? "", coverImage: item.coverImage ?? "", description: item.description ?? "", manualDeliveryHint: item.manualDeliveryHint ?? "", purchaseNote: item.purchaseNote ?? "", status: item.status, sort: item.sort };
+  return { id: item.id, categoryId: item.categoryId ?? 0, name: item.name, slug: item.slug, subtitle: item.subtitle ?? "", coverImage: item.coverImage ?? "", description: item.description ?? "", manualDeliveryHint: item.manualDeliveryHint ?? "", purchaseNote: item.purchaseNote ?? "", externalPayUrl: item.externalPayUrl ?? "", status: item.status, sort: item.sort };
 }
 
 export type ProductDeliveryType = (typeof deliveryTypes)[number];
@@ -47,6 +48,9 @@ export type ProductSkuDraftInput = {
   status: "ACTIVE" | "INACTIVE";
   deliveryType: ProductDeliveryType;
   fixedDeliveryContent: string;
+  externalPayUrl?: string;
+  sourceUrl?: string;
+  sourceCost?: string;
   physicalStock: number | null;
   minBuy: number;
   maxBuy: number;
@@ -65,6 +69,7 @@ export function formToSaveInput(form: ProductForm, skus: ProductSkuDraftInput[],
     description: form.description,
     manualDeliveryHint: form.manualDeliveryHint,
     purchaseNote: form.purchaseNote,
+    externalPayUrl: form.externalPayUrl,
     status: form.status,
     sort: form.sort,
     deliveryType,

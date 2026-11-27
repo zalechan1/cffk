@@ -25,7 +25,7 @@ import { assertSupplierSkuOrderable } from "@/server/supplier/eligibility";
 const DELIVERY_LEASE_MS = 5 * 60 * 1000;
 
 type ContactType = "EMAIL" | "QQ" | "TELEGRAM" | "OTHER";
-type PaymentProvider = "ALIPAY" | "EPAY" | "BEPUSDT" | "STRIPE" | "HASHPAY";
+type PaymentProvider = "ALIPAY" | "EPAY" | "BEPUSDT" | "STRIPE" | "HASHPAY" | "PERPAY" | "EXTERNAL_LINK";
 
 export type CreateOrderInput = {
   productId: number;
@@ -432,11 +432,18 @@ export type OrderCloseMaintenanceResult = { scanned: number; closed: number };
 
 export async function closeExpiredPendingOrders(database: D1Database, cutoff: Date, limit = 100, closeableAlipayOrderIds: readonly number[] = []): Promise<OrderCloseMaintenanceResult> {
   const db = createDrizzleDb(database);
+  const externalPayCutoff = new Date(cutoff.getTime() - (24 * 60 - 30) * 60 * 1000);
   const records = await db.select({ id: order.id }).from(order).where(and(
     eq(order.status, "PENDING"),
     eq(order.paymentStatus, "UNPAID"),
-    lt(order.createdAt, cutoff),
-    or(sql`${order.paymentProvider} != 'ALIPAY'`, closeableAlipayOrderIds.length ? inArray(order.id, closeableAlipayOrderIds) : sql`0 = 1`),
+    or(
+      and(eq(order.paymentProvider, "EXTERNAL_LINK"), lt(order.createdAt, externalPayCutoff)),
+      and(
+        sql`${order.paymentProvider} != 'EXTERNAL_LINK'`,
+        lt(order.createdAt, cutoff),
+        or(sql`${order.paymentProvider} != 'ALIPAY'`, closeableAlipayOrderIds.length ? inArray(order.id, closeableAlipayOrderIds) : sql`0 = 1`),
+      ),
+    ),
   )).limit(limit);
   let closed = 0;
   for (const record of records) if ((await closePendingOrder(database, record.id)).closed) closed += 1;

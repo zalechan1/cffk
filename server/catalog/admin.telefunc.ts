@@ -4,6 +4,7 @@ import { requireAdmin } from "@/server/telefunc-context";
 import { appError } from "@/lib/app-error";
 import { slugify } from "@/lib/slugify";
 import { formatCentsAsYuan, parseAmountToCents } from "@/lib/payment-utils";
+import { normalizeExternalPayUrl, normalizeSourceUrl } from "@/lib/external-pay";
 import { sanitizeProductDescription } from "./product-description";
 import { CATEGORY_TRANSLATION_FIELDS, PRODUCT_TRANSLATION_FIELDS, SKU_TRANSLATION_FIELDS, normalizeContentTranslations, readContentTranslations, serializeContentTranslations, type ContentTranslation, type ContentTranslationLocale, type ContentTranslations } from "@/lib/content-translations";
 import { card, category, order, productV2, productSku, supplierBinding } from "@/database/drizzle/schema";
@@ -98,12 +99,37 @@ function normalizeSkuTranslations(input: unknown) {
 function resolveCoverImage(value: unknown) {
   const image = optionalText(value, 2_048, "PRODUCT_COVER_IMAGE_INVALID");
   if (!image) return null;
-  if (image.startsWith("/media/proxy/")) return image;
+  if (image.startsWith("/media/proxy/") || image.startsWith("/products/")) return image;
   try {
     const url = new URL(image);
     if (url.protocol === "http:" || url.protocol === "https:") return image;
   } catch { /* Invalid URLs are rejected below. */ }
   appError("PRODUCT_COVER_IMAGE_INVALID");
+}
+
+function resolveProductExternalPayUrl(value: unknown) {
+  try {
+    return normalizeExternalPayUrl(value, "PRODUCT_EXTERNAL_PAY_URL_INVALID");
+  } catch {
+    appError("PRODUCT_EXTERNAL_PAY_URL_INVALID");
+  }
+}
+
+function resolveProductSourceUrl(value: unknown) {
+  try {
+    return normalizeSourceUrl(value, "PRODUCT_SOURCE_URL_INVALID");
+  } catch {
+    appError("PRODUCT_SOURCE_URL_INVALID");
+  }
+}
+
+function resolveOptionalSourceCost(value: unknown) {
+  if (value === undefined || value === null || String(value).trim() === "") return null;
+  const normalized = String(value).trim();
+  if (normalized === "0" || normalized === "0.0" || normalized === "0.00") return 0;
+  const cents = parseAmountToCents(normalized);
+  if (cents === null || cents < 0) appError("PRODUCT_SOURCE_COST_INVALID");
+  return cents;
 }
 
 
@@ -163,14 +189,14 @@ async function internalOnGetProductAdminDetail(input: { id: number }) {
   const [record] = await db.select().from(productV2).where(eq(productV2.id, input.id)).limit(1);
   if (!record) appError("PRODUCT_NOT_FOUND");
   const [sku] = await db.select({ id: productSku.id, name: productSku.name, fulfillmentSource: productSku.fulfillmentSource, deliveryType: productSku.deliveryType }).from(productSku).where(and(eq(productSku.productId, record.id), eq(productSku.status, "ACTIVE"))).orderBy(asc(productSku.sort), asc(productSku.id)).limit(1);
-  const skus = await db.select({ id: productSku.id, name: productSku.name, price: productSku.price, status: productSku.status, fulfillmentSource: productSku.fulfillmentSource, deliveryType: productSku.deliveryType, fixedDeliveryContent: productSku.fixedDeliveryContent, physicalStock: productSku.physicalStock, minBuy: productSku.minBuy, maxBuy: productSku.maxBuy, sort: productSku.sort, translationsJson: productSku.translationsJson }).from(productSku).where(eq(productSku.productId, record.id)).orderBy(asc(productSku.sort), asc(productSku.id));
+  const skus = await db.select({ id: productSku.id, name: productSku.name, price: productSku.price, status: productSku.status, fulfillmentSource: productSku.fulfillmentSource, deliveryType: productSku.deliveryType, fixedDeliveryContent: productSku.fixedDeliveryContent, externalPayUrl: productSku.externalPayUrl, sourceUrl: productSku.sourceUrl, sourceCost: productSku.sourceCost, physicalStock: productSku.physicalStock, minBuy: productSku.minBuy, maxBuy: productSku.maxBuy, sort: productSku.sort, translationsJson: productSku.translationsJson }).from(productSku).where(eq(productSku.productId, record.id)).orderBy(asc(productSku.sort), asc(productSku.id));
   const [inventory] = sku?.fulfillmentSource === "LOCAL" && sku.deliveryType === "CARD_AUTO"
     ? await db.select({ available: count() }).from(card).where(and(eq(card.productSkuId, sku.id), eq(card.status, "UNUSED")))
     : [];
   const { translationsJson, ...product } = record;
   return {
     product: { ...product, translations: readContentTranslations(translationsJson, PRODUCT_TRANSLATION_FIELDS) },
-    skus: skus.map(({ translationsJson, ...item }) => ({ ...item, translations: readContentTranslations(translationsJson, SKU_TRANSLATION_FIELDS), price: formatCentsAsYuan(item.price) })),
+    skus: skus.map(({ translationsJson, sourceCost, ...item }) => ({ ...item, sourceCost: sourceCost !== null ? formatCentsAsYuan(sourceCost) : "", translations: readContentTranslations(translationsJson, SKU_TRANSLATION_FIELDS), price: formatCentsAsYuan(item.price) })),
     cardInventory: sku ? { available: inventory?.available ?? 0 } : null,
   };
 }
@@ -237,6 +263,9 @@ type ProductSkuInput = {
   status: "ACTIVE" | "INACTIVE";
   deliveryType: DeliveryType;
   fixedDeliveryContent?: string;
+  externalPayUrl?: string | null;
+  sourceUrl?: string | null;
+  sourceCost?: string | number | null;
   physicalStock: number | null;
   minBuy: number;
   maxBuy: number;
@@ -254,6 +283,7 @@ async function internalOnSaveProduct(input: {
   description?: string;
   manualDeliveryHint?: string;
   purchaseNote?: string;
+  externalPayUrl?: string | null;
   status: ProductStatus;
   sort: number;
   skus: ProductSkuInput[];
@@ -288,9 +318,12 @@ async function internalOnSaveProduct(input: {
       ? (sku.physicalStock === null ? appError("PHYSICAL_STOCK_REQUIRED") : nonNegativeInteger(sku.physicalStock, "PHYSICAL_STOCK_INVALID"))
       : null;
     const fixedDeliveryContent = optionalText(sku.fixedDeliveryContent, 10_000, "FIXED_DELIVERY_CONTENT_INVALID");
+    const externalPayUrl = resolveProductExternalPayUrl(sku.externalPayUrl);
+    const sourceUrl = resolveProductSourceUrl(sku.sourceUrl);
+    const sourceCost = resolveOptionalSourceCost(sku.sourceCost);
     if (sku.deliveryType === "FIXED_CARD" && sku.status === "ACTIVE" && !fixedDeliveryContent) appError("FIXED_DELIVERY_CONTENT_REQUIRED");
     if (sku.status !== "ACTIVE" && sku.status !== "INACTIVE") appError("PRODUCT_SKU_STATUS_INVALID");
-    return { id: sku.id, name, price: cents, status: sku.status, fulfillmentSource: "LOCAL" as const, deliveryType: sku.deliveryType, fixedDeliveryContent: sku.deliveryType === "FIXED_CARD" ? fixedDeliveryContent : null, physicalStock, minBuy, maxBuy, sort: nonNegativeInteger(sku.sort, "PRODUCT_SORT_INVALID"), translationsJson: serializeContentTranslations(normalizeSkuTranslations(sku.translations), SKU_TRANSLATION_FIELDS) };
+    return { id: sku.id, name, price: cents, status: sku.status, fulfillmentSource: "LOCAL" as const, deliveryType: sku.deliveryType, fixedDeliveryContent: sku.deliveryType === "FIXED_CARD" ? fixedDeliveryContent : null, externalPayUrl, sourceUrl, sourceCost, physicalStock, minBuy, maxBuy, sort: nonNegativeInteger(sku.sort, "PRODUCT_SORT_INVALID"), translationsJson: serializeContentTranslations(normalizeSkuTranslations(sku.translations), SKU_TRANSLATION_FIELDS) };
   });
   if (new Set(normalizedSkus.map((sku) => sku.name)).size !== normalizedSkus.length) appError("PRODUCT_SKU_NAME_CONFLICT");
 
@@ -307,6 +340,7 @@ async function internalOnSaveProduct(input: {
     description: sanitizeProductDescription(requiredText(input.description, "PRODUCT_DESCRIPTION_REQUIRED", 100_000, "PRODUCT_DESCRIPTION_TOO_LONG")) ?? (appError("PRODUCT_DESCRIPTION_REQUIRED"), null),
     manualDeliveryHint: optionalText(input.manualDeliveryHint, 2_000, "PRODUCT_MANUAL_DELIVERY_HINT_INVALID"),
     purchaseNote: optionalText(input.purchaseNote, 2_000, "PRODUCT_PURCHASE_NOTE_INVALID"),
+    externalPayUrl: resolveProductExternalPayUrl(input.externalPayUrl),
     translationsJson: serializeContentTranslations(normalizeProductTranslations(input.translations), PRODUCT_TRANSLATION_FIELDS),
     status: input.status,
     sort: nonNegativeInteger(input.sort, "PRODUCT_SORT_INVALID"),
@@ -472,7 +506,7 @@ async function internalOnSaveSupplierProductPresentation(input: {
 }
 
 export const onSaveSupplierProductPresentation = telefuncAction(internalOnSaveSupplierProductPresentation);
-async function internalOnSaveProductSku(input: { id?: number; productId: number; name: string; price: string; status: "ACTIVE" | "INACTIVE"; deliveryType: DeliveryType; fixedDeliveryContent?: string; physicalStock: number | null; minBuy: number; maxBuy: number; sort: number; translations?: ContentTranslations }) {
+async function internalOnSaveProductSku(input: { id?: number; productId: number; name: string; price: string; status: "ACTIVE" | "INACTIVE"; deliveryType: DeliveryType; fixedDeliveryContent?: string; externalPayUrl?: string | null; sourceUrl?: string | null; sourceCost?: string | number | null; physicalStock: number | null; minBuy: number; maxBuy: number; sort: number; translations?: ContentTranslations }) {
   const { db } = getAdminDb();
   if (!Number.isInteger(input.productId) || input.productId < 1) appError("PRODUCT_ID_INVALID");
   const [item] = await db.select().from(productV2).where(eq(productV2.id, input.productId)).limit(1);
@@ -493,8 +527,11 @@ async function internalOnSaveProductSku(input: { id?: number; productId: number;
   if (minBuy < 1 || maxBuy < minBuy) appError("PRODUCT_BUY_RANGE_INVALID");
   const physicalStock = input.deliveryType === "MANUAL" || input.deliveryType === "EXPRESS" ? (input.physicalStock === null ? appError("PHYSICAL_STOCK_REQUIRED") : nonNegativeInteger(input.physicalStock, "PHYSICAL_STOCK_INVALID")) : null;
   const fixedDeliveryContent = optionalText(input.fixedDeliveryContent, 10_000, "FIXED_DELIVERY_CONTENT_INVALID");
+  const externalPayUrl = resolveProductExternalPayUrl(input.externalPayUrl);
+  const sourceUrl = resolveProductSourceUrl(input.sourceUrl);
+  const sourceCost = resolveOptionalSourceCost(input.sourceCost);
   if (input.deliveryType === "FIXED_CARD" && input.status === "ACTIVE" && !fixedDeliveryContent) appError("FIXED_DELIVERY_CONTENT_REQUIRED");
-  const values = { name, price, status: input.status, fulfillmentSource: "LOCAL" as const, deliveryType: input.deliveryType, fixedDeliveryContent: input.deliveryType === "FIXED_CARD" ? fixedDeliveryContent : null, physicalStock, minBuy, maxBuy, sort: nonNegativeInteger(input.sort, "PRODUCT_SORT_INVALID"), translationsJson: serializeContentTranslations(normalizeSkuTranslations(input.translations), SKU_TRANSLATION_FIELDS), updatedAt: new Date() };
+  const values = { name, price, status: input.status, fulfillmentSource: "LOCAL" as const, deliveryType: input.deliveryType, fixedDeliveryContent: input.deliveryType === "FIXED_CARD" ? fixedDeliveryContent : null, externalPayUrl, sourceUrl, sourceCost, physicalStock, minBuy, maxBuy, sort: nonNegativeInteger(input.sort, "PRODUCT_SORT_INVALID"), translationsJson: serializeContentTranslations(normalizeSkuTranslations(input.translations), SKU_TRANSLATION_FIELDS), updatedAt: new Date() };
   try {
     if (input.id !== undefined) {
       const result = await db.update(productSku).set(values).where(and(eq(productSku.id, input.id), eq(productSku.productId, input.productId))).returning();

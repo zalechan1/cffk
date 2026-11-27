@@ -198,6 +198,32 @@
             <FieldSeparator />
 
             <FieldSet class="gap-4">
+              <FieldLegend>外部支付链接（可选）</FieldLegend>
+              <FieldDescription>配置后，商品详情页将支持直接跳转外部支付链接；优先级为「SKU 链接 &gt; 商品链接 &gt; 全站默认链接」，留空则使用站内原生收款通道。</FieldDescription>
+              <div class="grid gap-4 md:grid-cols-2">
+                <VeeField v-slot="{ componentField, errors }" name="externalPayUrl" :validate-on-input="true">
+                  <Field :data-invalid="errors.length > 0">
+                    <FieldLabel for="site-external-pay-url">默认外部支付链接</FieldLabel>
+                    <Input id="site-external-pay-url" v-bind="componentField" type="url" inputmode="url" placeholder="https://pay.example.com/?orderNo={orderNo}&amp;price={price}" :aria-invalid="errors.length > 0" />
+                    <FieldDescription>支持占位符：{orderNo}、{slug}、{product}、{sku}、{price}、{quantity}、{email}。</FieldDescription>
+                    <FieldError v-if="errors.length" :errors="errors" />
+                  </Field>
+                </VeeField>
+
+                <VeeField v-slot="{ componentField, errors }" name="externalPayButtonText" :validate-on-input="true">
+                  <Field :data-invalid="errors.length > 0">
+                    <FieldLabel for="site-external-pay-button">外部支付按钮文案</FieldLabel>
+                    <Input id="site-external-pay-button" v-bind="componentField" maxlength="40" placeholder="例如：立即前往支付" :aria-invalid="errors.length > 0" />
+                    <FieldDescription>留空默认显示“立即前往支付”。</FieldDescription>
+                    <FieldError v-if="errors.length" :errors="errors" />
+                  </Field>
+                </VeeField>
+              </div>
+            </FieldSet>
+
+            <FieldSeparator />
+
+            <FieldSet class="gap-4">
               <FieldLegend>注册设置</FieldLegend>
               <VeeField v-slot="{ componentField }" name="registrationEnabled">
                 <Field orientation="horizontal">
@@ -353,6 +379,8 @@ const formSchema = toTypedSchema(z.object({
   orderNotice: z.string().trim().max(2_000, "下单提示不能超过 2,000 个字符。"),
   headCode: z.string().trim().max(20_000, "页头代码不能超过 20,000 个字符。"),
   footerCode: z.string().trim().max(20_000, "页脚代码不能超过 20,000 个字符。"),
+  externalPayUrl: optionalUrl,
+  externalPayButtonText: z.string().trim().max(40, "外部支付按钮文案不能超过 40 个字符。"),
   registrationEnabled: z.boolean(),
 }));
 
@@ -369,6 +397,8 @@ type FormValues = {
   orderNotice: string;
   headCode: string;
   footerCode: string;
+  externalPayUrl: string;
+  externalPayButtonText: string;
   registrationEnabled: boolean;
   timezone: string;
 };
@@ -409,6 +439,8 @@ const initialValues: FormValues = {
   orderNotice: "",
   headCode: "",
   footerCode: "",
+  externalPayUrl: "",
+  externalPayButtonText: "",
   registrationEnabled: false,
   timezone: "Asia/Shanghai",
 };
@@ -522,6 +554,8 @@ function toFormValues(settings: Awaited<ReturnType<typeof onGetSiteSettings>>): 
     orderNotice: settings.orderNotice ?? "",
     headCode: settings.headCode ?? "",
     footerCode: settings.footerCode ?? "",
+    externalPayUrl: settings.externalPayUrl ?? "",
+    externalPayButtonText: settings.externalPayButtonText ?? "",
     registrationEnabled: settings.registrationEnabled === true,
     timezone,
   };

@@ -1,6 +1,6 @@
 import { telefuncAction } from "@/server/telefunc-action";
 import { and, asc, count, desc, eq, gte, like, lt, ne } from "drizzle-orm";
-import { order, orderDelivery, paymentLog } from "@/database/drizzle/schema";
+import { order, orderDelivery, paymentLog, productSku } from "@/database/drizzle/schema";
 import { appError } from "@/lib/app-error";
 import { formatCnyMinor, formatMinor, isCurrencyCode } from "@/lib/money";
 import { dateBoundaryInTimezone } from "@/lib/site-timezone";
@@ -56,13 +56,33 @@ async function internalOnGetAdminOrderDetail(input: { orderId: number }) {
   const { db } = requireAdmin();
   const [record] = await db.select().from(order).where(eq(order.id, input.orderId)).limit(1);
   if (!record) appError("ORDER_NOT_FOUND");
-  const [deliveries, payments] = await Promise.all([
+  const [deliveries, payments, skuRows] = await Promise.all([
     db.select().from(orderDelivery).where(eq(orderDelivery.orderId, record.id)).orderBy(desc(orderDelivery.createdAt)),
     db.select({ id: paymentLog.id, eventType: paymentLog.eventType, verifyStatus: paymentLog.verifyStatus, message: paymentLog.message, createdAt: paymentLog.createdAt }).from(paymentLog).where(eq(paymentLog.orderId, record.id)).orderBy(desc(paymentLog.createdAt)),
+    record.productSkuId
+      ? db.select({ name: productSku.name, sourceUrl: productSku.sourceUrl, sourceCost: productSku.sourceCost }).from(productSku).where(eq(productSku.id, record.productSkuId)).limit(1)
+      : Promise.resolve([]),
   ]);
+  const skuRow = skuRows[0];
+  const sourceCostMinor = skuRow?.sourceCost ?? null;
+  const estimatedUnitCostMinor = sourceCostMinor !== null ? Math.round(sourceCostMinor * 1.028) : null;
+  const estimatedTotalCostMinor = sourceCostMinor !== null ? Math.round(sourceCostMinor * record.quantity * 1.028) : null;
+  const estimatedProfitMinor = estimatedTotalCostMinor !== null ? record.baseAmount - estimatedTotalCostMinor : null;
+  const source = skuRow && (skuRow.sourceUrl || sourceCostMinor !== null)
+    ? {
+        skuName: skuRow.name,
+        sourceUrl: skuRow.sourceUrl ?? null,
+        sourceCostMinor,
+        sourceCostFormatted: sourceCostMinor !== null ? formatCnyMinor(sourceCostMinor) : null,
+        estimatedUnitCostFormatted: estimatedUnitCostMinor !== null ? formatCnyMinor(estimatedUnitCostMinor) : null,
+        estimatedTotalCostFormatted: estimatedTotalCostMinor !== null ? formatCnyMinor(estimatedTotalCostMinor) : null,
+        estimatedProfitFormatted: estimatedProfitMinor !== null ? formatCnyMinor(estimatedProfitMinor) : null,
+        isLoss: estimatedProfitMinor !== null && estimatedProfitMinor < 0,
+      }
+    : null;
   const { addressSnapshotJson, ...orderRecord } = record;
   const currency = isCurrencyCode(record.currency) ? record.currency : "CNY";
-  return { order: { ...orderRecord, amount: formatMinor(record.amount, currency), baseAmount: formatCnyMinor(record.baseAmount), addressSnapshot: parseAddressSnapshot(addressSnapshotJson) }, deliveries, payments };
+  return { order: { ...orderRecord, amount: formatMinor(record.amount, currency), baseAmount: formatCnyMinor(record.baseAmount), addressSnapshot: parseAddressSnapshot(addressSnapshotJson) }, deliveries, payments, source };
 }
 
 async function internalOnCloseAdminOrder(input: { orderId: number }) {

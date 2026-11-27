@@ -61,7 +61,7 @@
                   <dl class="grid gap-x-8 gap-y-5 text-sm sm:grid-cols-[minmax(0,1fr)_8rem]">
                     <div class="min-w-0">
                       <dt class="text-xs text-muted-foreground">商品</dt>
-                      <dd class="mt-1 wrap-break-word font-medium">{{ detail.order.productNameSnapshot }}</dd>
+                      <dd class="mt-1 wrap-break-word font-medium">{{ detail.order.productNameSnapshot }}<span v-if="detail.order.productSkuNameSnapshot" class="text-muted-foreground"> · {{ detail.order.productSkuNameSnapshot }}</span></dd>
                     </div>
                     <div>
                       <dt class="text-xs text-muted-foreground">数量</dt>
@@ -74,6 +74,10 @@
                     <div>
                       <dt class="text-xs text-muted-foreground">订单金额</dt>
                       <dd class="mt-1 text-base font-semibold">{{ detail.order.amount }}</dd>
+                    </div>
+                    <div class="min-w-0">
+                      <dt class="text-xs text-muted-foreground">支付通道</dt>
+                      <dd class="mt-1 font-medium">{{ paymentProviderLabel(detail.order.paymentProvider) }}</dd>
                     </div>
                     <div v-if="detail.order.currency !== 'CNY'">
                       <dt class="text-xs text-muted-foreground">折合人民币</dt>
@@ -88,6 +92,41 @@
                       <dd class="mt-1 wrap-break-word">{{ detail.order.contactType }} · {{ detail.order.contactValue || "-" }}</dd>
                     </div>
                   </dl>
+                </CardContent>
+              </Card>
+
+              <Card v-if="detail.source" class="gap-0 border-orange-500/30 py-0">
+                <CardHeader class="border-b bg-orange-500/5 px-4 py-4 sm:px-5">
+                  <div class="flex flex-wrap items-center justify-between gap-2">
+                    <CardTitle class="text-sm">上游采购指引（仅管理员可见）</CardTitle>
+                    <Button v-if="detail.source.sourceUrl" size="sm" as-child>
+                      <a :href="detail.source.sourceUrl" target="_blank" rel="noopener noreferrer">去 16688 采购同款 ↗</a>
+                    </Button>
+                  </div>
+                </CardHeader>
+                <CardContent class="grid gap-4 p-4 text-sm sm:p-5">
+                  <dl class="grid grid-cols-2 gap-4 sm:grid-cols-4">
+                    <div>
+                      <dt class="text-xs text-muted-foreground">原店参考单价</dt>
+                      <dd class="mt-1 font-medium">{{ detail.source.sourceCostFormatted || "-" }}</dd>
+                    </div>
+                    <div>
+                      <dt class="text-xs text-muted-foreground">含 2.8% 费预估成本</dt>
+                      <dd class="mt-1 font-medium">{{ detail.source.estimatedTotalCostFormatted || "-" }}</dd>
+                    </div>
+                    <div>
+                      <dt class="text-xs text-muted-foreground">本单实付人民币</dt>
+                      <dd class="mt-1 font-medium">{{ detail.order.baseAmount }}</dd>
+                    </div>
+                    <div>
+                      <dt class="text-xs text-muted-foreground">预估毛利</dt>
+                      <dd class="mt-1 font-semibold" :class="detail.source.isLoss ? 'text-destructive' : 'text-emerald-600 dark:text-emerald-400'">{{ detail.source.estimatedProfitFormatted || "-" }}</dd>
+                    </div>
+                  </dl>
+                  <div class="flex flex-wrap items-center gap-2 border-t pt-3">
+                    <Button v-if="detail.order.paymentStatus === 'UNPAID'" size="sm" variant="outline" :disabled="replenishingOrderId === detail.order.id" @click="openReplenishFromDetail">确认收款（补单）</Button>
+                    <Button v-if="detail.order.paymentStatus === 'PAID' && detail.order.deliveryStatus !== 'DELIVERED' && detail.order.deliveryTypeSnapshot !== 'SUPPLIER'" size="sm" variant="outline" @click="openDelivery(detail.order.id, detail.source?.sourceUrl ?? null)">填写发货内容</Button>
+                  </div>
                 </CardContent>
               </Card>
 
@@ -164,7 +203,7 @@
     <Dialog v-model:open="deliveryOpen" @update:open="onDeliveryOpenChange">
       <DialogContent class="grid max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-xl grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden p-0" @interact-outside.prevent @escape-key-down.prevent>
         <DialogHeader class="border-b px-6 py-5 pr-14"><DialogTitle>处理发货</DialogTitle><DialogDescription>人工或物流订单填写发货内容；自动卡密订单执行恢复发货。</DialogDescription></DialogHeader>
-        <div class="min-h-0 overflow-y-auto px-6 py-5"><label class="grid gap-2 text-sm font-medium">发货内容<Textarea v-model="deliveryContent" rows="6" class="min-h-28 w-full" placeholder="人工发货说明、物流单号或物流信息" /></label><p class="mt-3 text-xs text-muted-foreground">标记失败不会占用成功发货快照，修正内容后可再次完成发货。</p></div>
+        <div class="min-h-0 overflow-y-auto px-6 py-5"><div v-if="deliverySourceUrl" class="mb-4 flex items-center justify-between gap-3 rounded-md border border-orange-500/30 bg-orange-500/5 px-3 py-2 text-xs"><span class="text-muted-foreground">代购订单可直接前往上游购买同款后将卡密或账号粘贴到下方：</span><a :href="deliverySourceUrl" target="_blank" rel="noopener noreferrer" class="shrink-0 font-medium text-primary underline">打开 16688 进货页 ↗</a></div><label class="grid gap-2 text-sm font-medium">发货内容<Textarea v-model="deliveryContent" rows="6" class="min-h-28 w-full" placeholder="人工发货说明、物流单号或物流信息" /></label><p class="mt-3 text-xs text-muted-foreground">标记失败不会占用成功发货快照，修正内容后可再次完成发货。</p></div>
         <DialogFooter class="flex flex-wrap border-t px-6 py-4"><Button :disabled="delivering" @click="completeDelivery">确认发货</Button><Button variant="outline" :disabled="delivering" @click="retryAutomatic">重试自动发货</Button><Button variant="destructive" :disabled="delivering" @click="markDeliveryFailed">标记发货失败</Button><Button variant="ghost" :disabled="delivering" @click="closeDelivery">取消</Button></DialogFooter>
       </DialogContent>
     </Dialog>
@@ -232,7 +271,7 @@ const deliveryContents = computed(() => detail.value?.deliveries.flatMap((item) 
 const columns: AdminTableColumn<Order>[] = [
   { key: "orderNo", label: "订单" }, { key: "productName", label: "商品" }, { key: "quantity", label: "数量" }, { key: "deliveryType", label: "发货方式" }, { key: "contactValue", label: "联系方式" }, { key: "amount", label: "金额" }, { key: "delivery", label: "发货" }, { key: "status", label: "订单状态" }, { key: "createdAt", label: "创建时间" },
 ];
-const orders = ref<Order[]>([]); const detail = ref<Detail | null>(null); const detailOpen = ref(false); const loading = ref(false); const delivering = ref(false); const replenishingOrderId = ref<number | null>(null); const replenishDialogOpen = ref(false); const replenishTarget = ref<Order | null>(null); const page = ref(1); const pageSize = ref(10); const total = ref(0); const deliveryOpen = ref(false); const deliveryOrderId = ref<number | null>(null); const deliveryContent = ref("");
+const orders = ref<Order[]>([]); const detail = ref<Detail | null>(null); const detailOpen = ref(false); const loading = ref(false); const delivering = ref(false); const replenishingOrderId = ref<number | null>(null); const replenishDialogOpen = ref(false); const replenishTarget = ref<Pick<Order, "id" | "orderNo"> | null>(null); const page = ref(1); const pageSize = ref(10); const total = ref(0); const deliveryOpen = ref(false); const deliveryOrderId = ref<number | null>(null); const deliveryContent = ref(""); const deliverySourceUrl = ref<string | null>(null);
 const selectedIds = ref<string[]>([]); const actionDialogOpen = ref(false); const actionBusy = ref(false); const actionMode = ref<"DELETE_SELECTED" | "DELETE_FILTERED" | "CLOSE_PENDING">("DELETE_SELECTED");
 const appliedFilters = ref({ query: "", status: "" as "" | Order["status"], deliveryStatus: "" as "" | Order["deliveryStatus"], startDate: "", endDate: "" });
 const filters = reactive<{ query: string; status: "" | Order["status"]; deliveryStatus: "" | Order["deliveryStatus"]; startDate: string; endDate: string }>({ query: "", status: "", deliveryStatus: "", startDate: "", endDate: "" });
@@ -240,10 +279,22 @@ const dateRange = computed({ get: () => ({ start: filters.startDate, end: filter
 async function loadOrders() { loading.value = true; try { const result = await runTelefunc(() => onGetAdminOrders({ page: page.value, pageSize: pageSize.value, ...(filters.query ? { query: filters.query } : {}), ...(filters.status ? { status: filters.status } : {}), ...(filters.deliveryStatus ? { deliveryStatus: filters.deliveryStatus } : {}), ...(filters.startDate ? { startDate: filters.startDate } : {}), ...(filters.endDate ? { endDate: filters.endDate } : {}) }), { errorMessage: "读取订单失败，请稍后重试。" }); orders.value = result.orders; total.value = result.total; page.value = result.page; selectedIds.value = []; appliedFilters.value = { query: filters.query, status: filters.status, deliveryStatus: filters.deliveryStatus, startDate: filters.startDate, endDate: filters.endDate }; } finally { loading.value = false; } }
 async function showDetail(orderId: number) { detail.value = await runTelefunc(() => onGetAdminOrderDetail({ orderId }), { errorMessage: "读取订单详情失败，请稍后重试。" }); detailOpen.value = true; }
 async function closeOrder(orderId: number) { try { await runTelefunc(() => onCloseAdminOrder({ orderId }), { successMessage: "订单已关闭，已释放预占资源。" }); await loadOrders(); if (detail.value?.order.id === orderId) await showDetail(orderId); } catch { /* runTelefunc already displayed the error toast. */ } }
-function openReplenish(order: Order) { if (replenishingOrderId.value !== null) return; replenishTarget.value = order; replenishDialogOpen.value = true; }
+function openReplenish(order: Pick<Order, "id" | "orderNo">) { if (replenishingOrderId.value !== null) return; replenishTarget.value = order; replenishDialogOpen.value = true; }
+function openReplenishFromDetail() { if (!detail.value) return; openReplenish({ id: detail.value.order.id, orderNo: detail.value.order.orderNo }); }
 async function confirmReplenish() { const target = replenishTarget.value; if (!target || replenishingOrderId.value !== null) return; replenishingOrderId.value = target.id; try { await runTelefunc(() => onReplenishAdminOrder({ orderId: target.id }), { successMessage: "补单成功，订单已按支付成功处理。" }); replenishDialogOpen.value = false; await loadOrders(); if (detail.value?.order.id === target.id) await showDetail(target.id); } catch { /* runTelefunc already displayed the error toast. */ } finally { replenishingOrderId.value = null; replenishTarget.value = null; } }
-function openDelivery(orderId: number) { deliveryOrderId.value = orderId; deliveryContent.value = ""; deliveryOpen.value = true; }
-function closeDelivery() { deliveryOpen.value = false; deliveryOrderId.value = null; deliveryContent.value = ""; }
+async function openDelivery(orderId: number, sourceUrl: string | null = null) {
+  deliveryOrderId.value = orderId;
+  deliveryContent.value = "";
+  deliverySourceUrl.value = sourceUrl;
+  deliveryOpen.value = true;
+  if (!sourceUrl) {
+    try {
+      const info = await runTelefunc(() => onGetAdminOrderDetail({ orderId }), { notifyError: false });
+      deliverySourceUrl.value = info.source?.sourceUrl ?? null;
+    } catch { /* ignore */ }
+  }
+}
+function closeDelivery() { deliveryOpen.value = false; deliveryOrderId.value = null; deliveryContent.value = ""; deliverySourceUrl.value = null; }
 function onDeliveryOpenChange(open: boolean) { if (!open && !delivering.value) closeDelivery(); }
 async function completeDelivery() { if (!deliveryOrderId.value) return; delivering.value = true; try { await runTelefunc(() => onRecordManualDelivery({ orderId: deliveryOrderId.value!, content: deliveryContent.value }), { successMessage: "订单已完成发货。" }); closeDelivery(); await loadOrders(); } catch { /* runTelefunc already displayed the error toast. */ } finally { delivering.value = false; } }
 async function markDeliveryFailed() { if (!deliveryOrderId.value) return; delivering.value = true; try { await runTelefunc(() => onRecordManualDelivery({ orderId: deliveryOrderId.value!, content: deliveryContent.value, failed: true }), { successMessage: "已标记发货失败。" }); closeDelivery(); await loadOrders(); } catch { /* runTelefunc already displayed the error toast. */ } finally { delivering.value = false; } }
@@ -315,6 +366,9 @@ function paymentLabel(value: Order["paymentStatus"]) { return { UNPAID: "待支�
 function statusLabel(value: Order["status"]) { return { PENDING: "待支付", PAID: "已支付", DELIVERED: "已完成", CLOSED: "已关闭", FAILED: "发货失败" }[value]; }
 function statusVariant(value: Order["status"]): "default" | "secondary" | "destructive" | "outline" { return value === "FAILED" ? "destructive" : value === "CLOSED" ? "outline" : value === "PENDING" ? "secondary" : "default"; }
 function deliveryLabel(value: Order["deliveryStatus"]) { return { NOT_DELIVERED: "未发货", DELIVERING: "发货中", DELIVERED: "已发货", FAILED: "发货失败" }[value]; }
+function paymentProviderLabel(value: string) {
+  return ({ ALIPAY: "支付宝", EPAY: "易支付", BEPUSDT: "BEpusdt", STRIPE: "Stripe", HASHPAY: "HashPay", PERPAY: "PerPay", EXTERNAL_LINK: "外部支付链接" } as Record<string, string>)[value] ?? value;
+}
 function deliveryTypeLabel(value: unknown) {
   return { CARD_AUTO: "自动卡密", FIXED_CARD: "固定内容", MANUAL: "人工发货", EXPRESS: "快递发货", SUPPLIER: "供应商履约" }[value as Order["deliveryType"]] ?? "-";
 }

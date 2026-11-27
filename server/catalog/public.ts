@@ -18,6 +18,7 @@ export type PublicSku = {
   availableStock: number | null;
   minBuy: number;
   maxBuy: number;
+  externalPayUrl: string | null;
 };
 
 export type PublicCatalog = {
@@ -52,6 +53,7 @@ export type PublicProductDetail = PublicCatalog["products"][number] & {
   description: LocalizedNullableText;
   purchaseNote: string | null;
   manualDeliveryHint: string | null;
+  externalPayUrl: string | null;
   skus: PublicSku[];
 };
 
@@ -80,6 +82,7 @@ export async function getPublicProductDetail(database: D1Database, slug: string)
       description: productV2.description,
       purchaseNote: productV2.purchaseNote,
       manualDeliveryHint: productV2.manualDeliveryHint,
+      externalPayUrl: productV2.externalPayUrl,
       translationsJson: productV2.translationsJson,
       categoryName: category.name,
       categorySlug: category.slug,
@@ -91,7 +94,7 @@ export async function getPublicProductDetail(database: D1Database, slug: string)
     .limit(1);
   if (!item) return null;
 
-  const skuRows = await db.select({ id: productSku.id, name: productSku.name, price: productSku.price, deliveryType: productSku.deliveryType, physicalStock: productSku.physicalStock, minBuy: productSku.minBuy, maxBuy: productSku.maxBuy, translationsJson: productSku.translationsJson }).from(productSku).where(and(eq(productSku.productId, item.id), eq(productSku.status, "ACTIVE"))).orderBy(asc(productSku.sort), asc(productSku.id));
+  const skuRows = await db.select({ id: productSku.id, name: productSku.name, price: productSku.price, deliveryType: productSku.deliveryType, physicalStock: productSku.physicalStock, minBuy: productSku.minBuy, maxBuy: productSku.maxBuy, externalPayUrl: productSku.externalPayUrl, translationsJson: productSku.translationsJson }).from(productSku).where(and(eq(productSku.productId, item.id), eq(productSku.status, "ACTIVE"))).orderBy(asc(productSku.sort), asc(productSku.id));
   const site = await getSiteSettings(database);
   const currency = storeCurrency(site);
   const exchangeRate = storeExchangeRate(site);
@@ -107,6 +110,7 @@ export async function getPublicProductDetail(database: D1Database, slug: string)
       physicalStock: sku.physicalStock,
       minBuy: sku.minBuy,
       maxBuy: sku.maxBuy,
+      externalPayUrl: sku.externalPayUrl ?? null,
       availableStock: sku.deliveryType === "CARD_AUTO" ? await countAvailableCardStockBySku(db, sku.id) : sku.deliveryType === "SUPPLIER" ? null : sku.physicalStock,
     };
   }));
@@ -123,6 +127,7 @@ export async function getPublicProductDetail(database: D1Database, slug: string)
     description: buildLocalizedOptionalText(item.description, translations, "description"),
     purchaseNote: item.purchaseNote,
     manualDeliveryHint: item.manualDeliveryHint,
+    externalPayUrl: item.externalPayUrl ?? null,
     categoryName: item.categoryName === null ? null : categoryNameMap({ slug: item.categorySlug, name: item.categoryName, translationsJson: item.categoryTranslationsJson }),
     price: primary.price,
     priceMinor: primary.priceMinor,
